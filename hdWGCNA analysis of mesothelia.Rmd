@@ -1,0 +1,515 @@
+---
+title: "hdWGCNA"
+output: html_document
+date: "2024-01-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r}
+# single-cell analysis package
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+library(igraph)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+set.seed(12345)
+```
+
+```{r}
+# load the dataset
+seurat_obj <- readRDS('/mnt/sdb/qdang/meso_project/integrated_tissue_rna.rds')
+```
+
+
+```{r}
+p <- DimPlot(seurat_obj, group.by='tissue', label=TRUE) +
+   umap_theme() + ggtitle('integrate mesothelium across tissues') + NoLegend()
+
+p
+```
+
+
+```{r}
+seurat_obj <- SetupForWGCNA(
+  seurat_obj,
+  gene_select = "fraction", # the gene selection approach
+  fraction = 0.05, # fraction of cells that a gene needs to be expressed in order to be included
+  wgcna_name = "tissue_mesothelium" # the name of the hdWGCNA experiment
+)
+```
+
+```{r}
+# construct metacells  in each group
+seurat_obj <- MetacellsByGroups(
+  seurat_obj = seurat_obj,
+  group.by = c("cell_type", "tissue"), # specify the columns in seurat_obj@meta.data to group by
+  reduction = 'UMAP', # select the dimensionality reduction to perform KNN on
+  k = 25, # nearest-neighbors parameter
+  max_shared = 10, # maximum number of shared cells between two metacells
+  ident.group = 'tissue' # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+seurat_obj <- NormalizeMetacells(seurat_obj)
+```
+
+
+
+```{r}
+##This step may throw some error, that is when SeuratObject, due to being in v5, prevent the function GetAssayData from functioning properly. Make sure that all v5 functions are disabled
+seurat_obj <- SetDatExpr(
+  seurat_obj,
+  group_name = "mesothelial", # the name of the group of interest in the group.by column
+  group.by='cell_type', # the metadata column containing the cell type info. This same column should have also been used in MetacellsByGroups
+  assay="originalexp",
+  slot = 'data' # using normalized data
+)
+```
+
+```{r}
+# Test different soft powers:
+seurat_obj <- TestSoftPowers(
+  seurat_obj,
+  networkType = 'signed' # you can also use "unsigned" or "signed hybrid"
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(seurat_obj)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+```
+
+
+```{r}
+power_table <- GetPowerTable(seurat_obj)
+head(power_table)
+```
+
+```{r}
+# construct co-expression network:
+seurat_obj <- ConstructNetwork(
+  seurat_obj, soft_power=8,
+  setDatExpr=FALSE,
+  tom_name = 'Tissue_mesothelium',
+  overwrite_tom = TRUE # name of the topoligical overlap matrix written to disk
+)
+```
+
+```{r}
+PlotDendrogram(seurat_obj, main='Tissue mesothelium hdWGCNA Dendrogram')
+```
+
+
+```{r}
+TOM <- GetTOM(seurat_obj)
+seurat_obj <- ScaleData(seurat_obj)
+```
+
+```{r}
+# compute all MEs in the full single-cell dataset. I'm not harmonizing the data by batch as I already used the scANVI batch-corrected dimension reduction to construct metacells. Further harmonization may mask the effect between groups. 
+seurat_obj <- ModuleEigengenes(
+ seurat_obj,
+ group.by.vars="tissue"
+)
+```
+
+
+```{r}
+# module eigengenes are not harmonized:
+MEs <- GetMEs(seurat_obj, harmonized=FALSE)
+```
+
+```{r}
+# compute eigengene-based connectivity (kME):
+seurat_obj <- ModuleConnectivity(
+  seurat_obj,
+  group.by = "cell_type", group_name = "mesothelial"
+)
+```
+
+```{r}
+# rename the modules
+seurat_obj <- ResetModuleNames(
+  seurat_obj,
+  new_name = "Meso-M"
+)
+```
+
+```{r}
+# plot genes ranked by kME for each module
+p <- PlotKMEs(seurat_obj, ncol=5)
+
+p
+```
+
+```{r}
+# get the module assignment table:
+modules <- GetModules(seurat_obj)
+
+# show the first 6 columns:
+head(modules[,1:6])
+write.csv(modules, file = "/mnt/sdb/qdang/meso_project/hdwgcna/modules_tissue.csv")
+```
+
+```{r}
+seurat_obj <- readRDS('/mnt/sdb/qdang/meso_project/hdwgcna/hdWGCNA_integrated_tissue_rna.rds')
+# get hub genes
+hub_df <- GetHubGenes(seurat_obj, n_hubs = 20)
+
+head(hub_df)
+write.csv(hub_df, file = "/mnt/sdb/qdang/meso_project/hdwgcna/hub_genes_meso.csv")
+```
+
+```{r}
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with Seurat method
+seurat_obj <- ModuleExprScore(
+  seurat_obj,
+  n_genes = 1,
+  method='Seurat'
+)
+
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with UCell method
+library(UCell)
+seurat_obj <- ModuleExprScore(
+  seurat_obj,
+  n_genes = 1,
+  method='UCell'
+)
+```
+
+```{r}
+# make a featureplot of hMEs for each module
+plot_list <- ModuleFeaturePlot(
+  seurat_obj,
+  features='MEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+```
+```{r}
+seurat_obj <- readRDS("/mnt/sdb/qdang/meso_project/hdwgcna/hdWGCNA_integrated_tissue_rna.rds")
+```
+
+
+```{r}
+ModuleCorrelogram(seurat_obj)
+```
+
+```{r}
+# get hMEs from seurat object
+MEs <- GetMEs(seurat_obj, harmonized=FALSE)
+mods <- colnames(MEs); mods <- mods[mods != 'grey']
+
+# add hMEs to Seurat meta-data:
+seurat_obj@meta.data <- cbind(seurat_obj@meta.data, MEs)
+```
+
+```{r}
+# plot with Seurat's DotPlot function
+p <- DotPlot(seurat_obj, features=mods, group.by = 'tissue')
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p2 <- p +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+p2
+# plot output
+ggsave(p2, filename="/mnt/sdb/qdang/meso_project/hdwgcna/modules_mesothelium.svg", device='svg', dpi=700, width=10, height=5)
+```
+
+```{r}
+# Plot Epi-M5 ME using Seurat VlnPlot function
+p <- VlnPlot(
+  seurat_obj,
+  features = 'Meso-M2',
+  group.by = 'tissue',
+  pt.size = 0 # don't show actual data points
+)
+
+# add box-and-whisker plots on top:
+p <- p + geom_boxplot(width=.25, fill='white')
+
+# change axis labels and remove legend:
+p + xlab('') + ylab('ME') + NoLegend()
+
+# plot output
+#ggsave(p, filename="/mnt/sdb/qdang/singlecell/hdwgcna/module1_callstates.png", type="cairo-png", dpi=1000)
+```
+
+```{r}
+# Plot Epi-M5 ME using Seurat VlnPlot function
+p <- VlnPlot(
+  seurat_obj,
+  features = 'Epi-M2',
+  group.by = 'cell_state',
+  pt.size = 0 # don't show actual data points
+)
+
+# add box-and-whisker plots on top:
+p <- p + geom_boxplot(width=.25, fill='white')
+
+# change axis labels and remove legend:
+p <- p + xlab('') + ylab('ME') + NoLegend()
+
+# plot output
+ggsave(p, filename="/mnt/sdb/qdang/singlecell/hdwgcna/module2_callstates.png", type="cairo-png", dpi=1000)
+```
+
+```{r}
+# convert cell states to factor
+seurat_obj$tissue <- as.factor(seurat_obj@meta.data$tissue)
+
+seurat_obj$batch <- as.factor(seurat_obj@meta.data$batch)
+# list of traits to correlate
+cur_traits <- c('nCount_originalexp', 'nFeature_originalexp', 'total_counts_mt')
+
+seurat_obj <- ModuleTraitCorrelation(
+  seurat_obj,
+  traits = cur_traits,
+  group.by='cell_state'
+)
+```
+
+
+```{r}
+# get the mt-correlation results
+mt_cor <- GetModuleTraitCorrelation(seurat_obj)
+
+names(mt_cor)
+```
+
+```{r}
+names(mt_cor$cor)
+```
+
+```{r}
+head(mt_cor$cor$Epicardium[,1:5])
+```
+
+```{r}
+ModuleNetworkPlot(seurat_obj, mod = "Meso-M1")
+```
+
+```{r}
+# hubgene network
+HubGeneNetworkPlot(
+  seurat_obj,
+  n_hubs = 3, n_other=5,
+  edge_prop = 0.75,
+  mods = 'all'
+)
+```
+
+
+```{r}
+setwd('/mnt/sdb/qdang/meso_project/hdwgcna')
+ModuleNetworkPlot(
+    seurat_obj, 
+    outdir='ModuleNetworks', # new folder name
+    n_inner = 20, # number of genes in inner ring
+    n_outer = 30, # number of genes in outer ring
+    n_conns = Inf, # show all of the connections
+    plot_size=c(10,10), # larger plotting area
+    vertex.label.cex=1 # font size
+)
+```
+
+
+```{r}
+seurat_obj <- RunModuleUMAP(
+  seurat_obj,
+  n_hubs = 10, # number of hub genes to include for the UMAP embedding
+  n_neighbors=15, # neighbors parameter for UMAP
+  min_dist=0.1 # min distance between points in UMAP space
+)
+```
+
+
+```{r}
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(seurat_obj)
+
+# plot with ggplot
+g <- ggplot(umap_df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(
+   color=umap_df$color, # color each point by WGCNA module
+   size=umap_df$kME*2 # size of each point based on intramodular connectivity
+  ) +
+  umap_theme()
+ggsave(g, filename="/mnt/sdb/qdang/singlecell/hdwgcna/gene_clusters_callstates.png", type="cairo-png", dpi=1000)
+```
+
+
+```{r}
+ModuleUMAPPlot(
+  seurat_obj,
+  edge.alpha=0.25,
+  sample_edges=TRUE,
+  edge_prop=0.1, # proportion of edges to sample (20% here)
+  label_hubs=2 ,# how many hub genes to plot per module?
+  keep_grey_edges=FALSE,
+  vertex.label.cex=5
+)
+```
+
+
+```{r}
+# different label weights to test
+n_hubs <- c(1, 1:10*5)
+
+# loop through different weights
+df <- data.frame()
+for(cur_hubs in n_hubs){
+
+  # make a module UMAP using different label weights
+  seurat_obj <- RunModuleUMAP(
+    seurat_obj,
+    n_hubs = cur_hubs,
+    n_neighbors=15,
+    exclude_grey = TRUE,
+    min_dist=0.1
+  )
+
+  # add to ongoing dataframe
+  cur_df <- GetModuleUMAP(seurat_obj)
+  cur_df$n_hubs <- cur_hubs
+  df <- rbind(df, cur_df)
+}
+
+# ggplot animation library
+library(gganimate)
+
+# plot with ggplot + gganimate
+p <- ggplot(df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(color=df$color, size=df$kME*2 ) +
+  ggtitle("N hubs: {closest_state}") +
+  transition_states(
+    n_hubs,
+    transition_length = 2,
+    state_length = 2,
+    wrap = TRUE
+  ) +
+  view_follow() +
+  enter_fade() +
+  umap_theme()
+
+animate(p, fps=30, duration=25)
+```
+
+
+```{r}
+# run supervised UMAP:
+seurat_obj <- RunModuleUMAP(
+  seurat_obj,
+  n_hubs = 10,
+  n_neighbors=15,
+  min_dist=0.1,
+  supervised=TRUE,
+  target_weight=0.5
+)
+
+# get the hub gene UMAP table from the seurat object
+umap_df <- GetModuleUMAP(seurat_obj)
+
+# plot with ggplot
+ggplot(umap_df, aes(x=UMAP1, y=UMAP2)) +
+  geom_point(
+   color=umap_df$color, # color each point by WGCNA module
+   size=umap_df$kME*2 # size of each point based on intramodular connectivity
+  ) +
+  umap_theme()
+```
+
+```{r}
+group1 <- seurat_obj@meta.data %>% subset(cell_type == 'Epicardium' & cell_state == 'Proliferative') %>% rownames
+group2 <- seurat_obj@meta.data %>% subset(cell_type == 'Epicardium' & cell_state == 'Deeply-quiescent') %>% rownames
+
+head(group1)
+head(group2)
+```
+
+```{r}
+DMEs <- FindDMEs(
+  seurat_obj,
+  barcodes1 = group2,
+  barcodes2 = group1,
+  test.use='wilcox',
+  wgcna_name='cellstate_integrated'
+)
+
+head(DMEs)
+```
+
+
+```{r}
+PlotDMEsLollipop(
+  seurat_obj, 
+  DMEs, 
+  wgcna_name='cellstate_integrated', 
+pvalue = "p_val_adj"
+)
+```
+
+```{r}
+PlotDMEsVolcano(
+  seurat_obj,
+  DMEs,
+  wgcna_name = 'cellstate_integrated'
+)
+```
+
+```{r}
+group.by = 'cell_state'
+
+DMEs_all <- FindAllDMEs(
+  seurat_obj,
+  group.by = 'cell_state',
+  wgcna_name = 'cellstate_integrated'
+)
+
+head(DMEs_all)
+```
+
+
+```{r}
+p <- PlotDMEsVolcano(
+  seurat_obj,
+  DMEs_all,
+  wgcna_name = 'cellstate_integrated',
+  plot_labels=FALSE,
+  show_cutoff=FALSE
+)
+
+# facet wrap by each cell type
+q = p + facet_wrap(~group, ncol=3)
+ggsave(q, filename="/mnt/sdb/qdang/singlecell/hdwgcna/onevsallDME.png", type="cairo-png", dpi=1000, )
+```
+
