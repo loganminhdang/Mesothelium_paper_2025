@@ -1,0 +1,273 @@
+#!/bin/bash
+#
+# ==============================================================================
+#
+#                       ATAC-seq & CUT&RUN-seq Analysis Code via Deeptools
+#
+# ==============================================================================
+#
+# Author: Quang Dang
+# Date: 2024-08-08
+# Description: This script performs a comprehensive analysis of ATAC-seq and
+#              CUT&RUN-seq data using the deepTools suite. The pipeline includes:
+#              1. Correlation analysis of ATAC-seq signal between different
+#                 cell types.
+#              2. Signal matrix computation over various genomic regions
+#                 (consensus peaks, enhancers, promoters).
+#              3. Visualization of signal distribution through heatmaps and
+#                 profile plots.
+#
+# Requirements:
+#   - micromamba
+#   - deeptools
+#
+# Usage:
+#   - Update the directory and file paths in the "Configuration" section.
+#   - Execute the script from your terminal: ./run_analysis.sh
+#
+# ==============================================================================
+
+# --- Configuration ---
+
+# Activate the required micromamba environment
+echo "Activating 'deeptools' environment..."
+eval "$(micromamba shell hook --shell bash)"
+micromamba activate deeptools
+
+# --- Set Base Directories ---
+# Using variables for paths makes the script easier to read and modify.
+PROJECT_DIR="/mnt/sdb/qdang/meso_project"
+BIGWIG_DIR="${PROJECT_DIR}/bigwig/atac_for_tobias_plottracks"
+CORRELATION_DIR="${PROJECT_DIR}/plotcorrelation"
+CONSENSUS_PEAK_DIR="${PROJECT_DIR}/outs/consensus_peak_calling/882024_meso_and_celltype/outs/consensus_peak_calling"
+REFERENCE_DIR="/mnt/sdb/qdang/reference/mouse/abc_reference"
+CUT_RUN_DIR="/mnt/sdb/qdang/cut_run"
+EXTERNAL_DATA_DIR="/mnt/sdb/andiar/Result_browse/v3_run_CPM/HISonly_SF08_q10/data_output_Hisonly/03_peak_calling/05_consensus_peaks"
+
+# --- Set File Paths ---
+# BigWig files for ATAC-seq
+EPICARDIUM_ATAC_BW="${BIGWIG_DIR}/epicardium_atac.bw"
+LUNG_MESO_ATAC_BW="${BIGWIG_DIR}/lung_mesothelium_atac.bw"
+PANCREAS_MESO_ATAC_BW="${BIGWIG_DIR}/pancreas_mesothelium_atac.bw"
+VENTRICULAR_CM_BW="${BIGWIG_DIR}/ventricular_cm.bw"
+VASCULAR_EC_BW="${BIGWIG_DIR}/vascular_ec.bw"
+EPICARDIUM_EMBRYOATLAS_ATAC_BW="${BIGWIG_DIR}/epicardium_embryoatlas_atac.bw"
+E135_ATAC_BW="/mnt/sdb/qdang/atac/bigwig/E135.TMM.bw"
+
+# BigWig files for CUT&RUN-seq
+H3K4ME3_EPI_BW="${CUT_RUN_DIR}/H3K4me3_EPI_merged_CPM.bw"
+H3K27AC_EPI_BW="${CUT_RUN_DIR}/H3K27ac_EPI_merged_CPM.bw"
+
+# BED files for genomic regions
+CONSENSUS_REGIONS_BED="${CONSENSUS_PEAK_DIR}/consensus_regions.bed"
+MERGED_EPI_REGIONS_BED="/mnt/sdb/qdang/atac/compare_epicardium_atac/merged.filtered.normalized.bed"
+H3K27AC_EPI_PEAKS_BED="${EXTERNAL_DATA_DIR}/H3K27ac_EPI.consensus.peaks.filtered.awk.bed"
+H3K4ME3_EPI_PEAKS_BED="${EXTERNAL_DATA_DIR}/H3K4me3_EPI.consensus.peaks.filtered.awk.bed"
+REFSEQ_GENE_BOUNDS_BED="${REFERENCE_DIR}/RefSeqCurated.060524.CollapsedGeneBounds.mm10.bed"
+
+# --- Create Output Directories ---
+# Ensures that directories for saving results exist before running the tools.
+mkdir -p "${CORRELATION_DIR}"
+
+# ==============================================================================
+#
+#        Part 1: ATAC-seq Signal Correlation Analysis
+#
+# ==============================================================================
+echo "Starting Part 1: ATAC-seq Signal Correlation Analysis"
+
+# --- Step 1.1: Calculate bigWig summary scores ---
+# This step computes the average scores for multiple bigWig files over a set of
+# genomic regions defined in a BED file.
+
+echo "Calculating summary scores for all cell types..."
+multiBigwigSummary BED-file \
+    -b "${EPICARDIUM_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" "${VENTRICULAR_CM_BW}" "${VASCULAR_EC_BW}" \
+    --BED "${CONSENSUS_REGIONS_BED}" \
+    -o "${CORRELATION_DIR}/results_all_celltypes.npz" \
+    -p 24
+
+echo "Calculating summary scores for mesothelial cell types..."
+multiBigwigSummary BED-file \
+    -b "${EPICARDIUM_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" \
+    --BED "${CONSENSUS_REGIONS_BED}" \
+    -o "${CORRELATION_DIR}/results_meso_celltypes.npz" \
+    -p 24
+
+echo "Calculating summary scores for epicardium comparison..."
+multiBigwigSummary BED-file \
+    -b "${EPICARDIUM_ATAC_BW}" "${EPICARDIUM_EMBRYOATLAS_ATAC_BW}" \
+    --BED "${MERGED_EPI_REGIONS_BED}" \
+    -o "${CORRELATION_DIR}/results_epicardium_comparison.npz" \
+    -p 24
+
+# --- Step 1.2: Plot correlation heatmaps ---
+# This step uses the summary scores to generate correlation heatmaps.
+
+echo "Plotting correlation heatmap for all cell types..."
+plotCorrelation \
+    -in "${CORRELATION_DIR}/results_all_celltypes.npz" \
+    --corMethod pearson --skipZeros \
+    --plotTitle "Pearson Correlation (All Cell Types)" \
+    --whatToPlot heatmap --colorMap RdYlBu \
+    -o "${CORRELATION_DIR}/heatmap_all_celltypes.pdf" \
+    --outFileCorMatrix "${CORRELATION_DIR}/corMatrix_all_celltypes.tab"
+
+echo "Plotting correlation heatmap for mesothelial cell types..."
+plotCorrelation \
+    -in "${CORRELATION_DIR}/results_meso_celltypes.npz" \
+    --corMethod pearson --skipZeros \
+    --plotTitle "Pearson Correlation (Mesothelial Cells)" \
+    --whatToPlot heatmap --colorMap RdYlBu \
+    -o "${CORRELATION_DIR}/heatmap_meso_celltypes.pdf" \
+    --outFileCorMatrix "${CORRELATION_DIR}/corMatrix_meso_celltypes.tab"
+
+echo "Plotting correlation heatmap for epicardium comparison..."
+plotCorrelation \
+    -in "${CORRELATION_DIR}/results_epicardium_comparison.npz" \
+    --corMethod pearson --skipZeros \
+    --plotTitle "Pearson Correlation (Epicardium Comparison)" \
+    --whatToPlot heatmap --colorMap RdYlBu \
+    -o "${CORRELATION_DIR}/heatmap_epicardium_comparison.pdf" \
+    --outFileCorMatrix "${CORRELATION_DIR}/corMatrix_epicardium_comparison.tab"
+
+# ==============================================================================
+#
+#        Part 2: ATAC-seq Signal Matrix Computation & Visualization
+#
+# ==============================================================================
+echo "Starting Part 2: ATAC-seq Signal Matrix Computation"
+
+# --- Step 2.1: Compute signal matrices ---
+# This step calculates scores over specified genomic regions for visualization
+# as heatmaps or profiles.
+
+echo "Computing matrix for all cell types at consensus peaks..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${CONSENSUS_REGIONS_BED}" \
+    -S "${EPICARDIUM_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" "${VENTRICULAR_CM_BW}" "${VASCULAR_EC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_all_celltypes_consensus_peaks.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_all_celltypes_consensus_peaks.bed"
+
+echo "Computing matrix for all cell types at enhancers..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K27AC_EPI_PEAKS_BED}" \
+    -S "${E135_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" "${VENTRICULAR_CM_BW}" "${VASCULAR_EC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_all_celltypes_enhancers.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_all_celltypes_enhancers.bed"
+
+echo "Computing matrix for mesothelial cells at enhancers..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K27AC_EPI_PEAKS_BED}" \
+    -S "${E135_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_meso_only_enhancers.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_meso_only_enhancers.bed"
+
+echo "Computing matrix for all cell types at promoters..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K4ME3_EPI_PEAKS_BED}" \
+    -S "${E135_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" "${VENTRICULAR_CM_BW}" "${VASCULAR_EC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_all_celltypes_promoters.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_all_celltypes_promoters.bed"
+
+echo "Computing matrix for mesothelial cells at promoters..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K4ME3_EPI_PEAKS_BED}" \
+    -S "${E135_ATAC_BW}" "${LUNG_MESO_ATAC_BW}" "${PANCREAS_MESO_ATAC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_meso_only_promoters.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_meso_only_promoters.bed"
+
+echo "Computing matrix for epicardium comparison at promoters..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K4ME3_EPI_PEAKS_BED}" \
+    -S "${EPICARDIUM_EMBRYOATLAS_ATAC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_epicardium_comparison_promoters.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_epicardium_comparison_promoters.bed"
+
+echo "Computing matrix for epicardium comparison at enhancers..."
+computeMatrix reference-point \
+    --referencePoint center \
+    -b 500 -a 500 \
+    -R "${H3K27AC_EPI_PEAKS_BED}" \
+    -S "${EPICARDIUM_EMBRYOATLAS_ATAC_BW}" \
+    --missingDataAsZero -p 24 \
+    -o "${CORRELATION_DIR}/matrix_epicardium_comparison_enhancers.gz" \
+    --outFileSortedRegions "${CORRELATION_DIR}/sortedRegions_epicardium_comparison_enhancers.bed"
+
+# --- Step 2.2: Plot heatmaps from matrices ---
+# This step generates heatmaps to visualize the signal distribution.
+
+echo "Plotting heatmaps for ATAC-seq signal..."
+plotHeatmap -m "${CORRELATION_DIR}/matrix_all_celltypes_consensus_peaks.gz" -out "${CORRELATION_DIR}/heatmap_accessibility_at_sharedpeaks.pdf" --dpi 300
+plotHeatmap -m "${CORRELATION_DIR}/matrix_all_celltypes_enhancers.gz" -out "${CORRELATION_DIR}/heatmap_accessibility_at_enhancers.pdf" --dpi 300
+plotHeatmap -m "${CORRELATION_DIR}/matrix_all_celltypes_promoters.gz" -out "${CORRELATION_DIR}/heatmap_accessibility_at_promoters.pdf" --dpi 300
+plotHeatmap -m "${CORRELATION_DIR}/matrix_epicardium_comparison_promoters.gz" -out "${CORRELATION_DIR}/heatmap_epicardium_comparison_promoters.pdf" --dpi 300
+plotHeatmap -m "${CORRELATION_DIR}/matrix_epicardium_comparison_enhancers.gz" -out "${CORRELATION_DIR}/heatmap_epicardium_comparison_enhancers.pdf" --dpi 300
+
+# ==============================================================================
+#
+#        Part 3: CUT&RUN-seq Signal Profile Analysis
+#
+# ==============================================================================
+echo "Starting Part 3: CUT&RUN-seq Signal Profile Analysis"
+
+# --- Step 3.1: Compute matrices for histone marks ---
+# This step calculates scores for H3K4me3 and H3K27ac over gene bodies.
+
+echo "Computing matrix for H3K4me3 over gene bodies..."
+computeMatrix scale-regions \
+    -p 25 \
+    -S "${H3K4ME3_EPI_BW}" \
+    -R "${REFSEQ_GENE_BOUNDS_BED}" \
+    --beforeRegionStartLength 1000 \
+    --regionBodyLength 5000 \
+    --afterRegionStartLength 1000 \
+    --skipZeros \
+    -o "${CORRELATION_DIR}/matrix_h3k4me3_gene_bodies.mat.gz"
+
+echo "Computing matrix for H3K27ac over gene bodies..."
+computeMatrix scale-regions \
+    -p 25 \
+    -S "${H3K27AC_EPI_BW}" \
+    -R "${REFSEQ_GENE_BOUNDS_BED}" \
+    --beforeRegionStartLength 3000 \
+    --regionBodyLength 20000 \
+    --afterRegionStartLength 3000 \
+    --skipZeros \
+    -o "${CORRELATION_DIR}/matrix_h3k27ac_gene_bodies.mat.gz"
+
+# --- Step 3.2: Plot profile plots ---
+# This step generates profile plots to show the average enrichment of histone
+# marks over gene bodies.
+
+echo "Plotting profile for H3K4me3..."
+plotProfile \
+    -m "${CORRELATION_DIR}/matrix_h3k4me3_gene_bodies.mat.gz" \
+    -out "${CORRELATION_DIR}/profile_h3k4me3_binding.pdf" --dpi 300
+
+echo "Plotting profile for H3K27ac..."
+plotProfile \
+    -m "${CORRELATION_DIR}/matrix_h3k27ac_gene_bodies.mat.gz" \
+    -out "${CORRELATION_DIR}/profile_h3k27ac_binding.pdf" --dpi 300
+
+# ==============================================================================
+echo "Analysis complete. Results are saved in ${CORRELATION_DIR}"
+# ==============================================================================
