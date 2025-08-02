@@ -1,0 +1,215 @@
+#!/bin/bash
+#
+# ==============================================================================
+#
+#            TOBIAS Footprinting and Differential Binding Analysis Pipeline
+#
+# ==============================================================================
+#
+# Author: Quang Dang
+# Date: 2024-08-02
+# Description: This script performs a comprehensive footprinting analysis using
+#              the TOBIAS toolkit. The pipeline includes:
+#              1. Annotation of consensus peak regions using UROPA.
+#              2. ATAC-seq bias correction with ATACorrect.
+#              3. Calculation of footprint scores.
+#              4. Differential binding analysis between conditions with BINDetect.
+#
+# Requirements:
+#   - micromamba
+#   - TOBIAS
+#   - UROPA
+#
+# Usage:
+#   - Update the directory and file paths in the "Configuration" section.
+#   - Execute the script from your terminal: ./run_footprinting_analysis.sh
+#
+# ==============================================================================
+
+# --- Configuration ---
+
+# Activate the required micromamba environment
+echo "Activating 'tfomb_env' environment..."
+eval "$(micromamba shell hook --shell bash)"
+micromamba activate tfomb_env
+
+# --- Set Base Directories ---
+# Using variables for paths
+PROJECT_DIR="/mnt/sdb/qdang/meso_project"
+ATAC_DATA_DIR="/mnt/sdb/qdang/atac"
+REFERENCE_DIR="/mnt/sdb/qdang/reference/mouse"
+
+# --- Set Tool and Output Directories ---
+BAM_DIR="${PROJECT_DIR}/bamfiles"
+TOBIAS_DIR="${PROJECT_DIR}/tobias"
+UROPA_DIR="${TOBIAS_DIR}/uropa"
+ATACORRECT_DIR="${TOBIAS_DIR}/ataccorrect"
+SCOREBIGWIG_DIR="${TOBIAS_DIR}/scorebigwig"
+BINDETECT_DIR="${TOBIAS_DIR}/bindetect"
+
+# --- Set Core File Paths ---
+GENOME_FA="${REFERENCE_DIR}/GRCm38.primary_assembly.genome.fa"
+ANNOTATION_GTF="${REFERENCE_DIR}/gencode.vM10.annotation.gtf"
+MOTIF_FILE="${ATAC_DATA_DIR}/mouse_TR_motif.txt"
+
+# --- Input BAM Files ---
+PANCREAS_BAM="${BAM_DIR}/pancreas/pancreas_meso_filtered.bam"
+LUNG_BAM="${BAM_DIR}/pancreas/lung_meso_filtered.bam" 
+HEART_CM_BAM="${BAM_DIR}/atac/heart/heart_cm_filtered.bam"
+HEART_EC_BAM="${BAM_DIR}/atac/heart/heart_ec_filtered.bam"
+# HEART_EPI_BAM="${ATAC_DATA_DIR}/E135.mRp.clN.sorted.bam" 
+
+# --- Input Peak Files (BED) ---
+MESO_CONSENSUS_PEAKS="${PROJECT_DIR}/outs/consensus_peak_calling/consensus_regions.bed"
+CELLTYPE_CONSENSUS_PEAKS="${PROJECT_DIR}/outs/consensus_peak_calling/celltype/outs/consensus_peak_calling/consensus_regions.bed"
+# E135_PEAKS="${ATAC_DATA_DIR}/macs2_peakcalling/merged.bed" # Example for commented-out sample
+
+# --- Create Output Directories ---
+# Ensures that directories for saving results exist before running the tools.
+mkdir -p "${UROPA_DIR}" "${ATACORRECT_DIR}" "${SCOREBIGWIG_DIR}" "${BINDETECT_DIR}"
+mkdir -p "${UROPA_DIR}/meso_tissue" "${UROPA_DIR}/cardiac_celltype"
+mkdir -p "${ATACORRECT_DIR}/pancreas" "${ATACORRECT_DIR}/lung" "${ATACORRECT_DIR}/heart_cm" "${ATACORRECT_DIR}/heart_ec"
+# mkdir -p "${ATACORRECT_DIR}/E135" # E13.5 epicardium
+mkdir -p "${SCOREBIGWIG_DIR}/E135"
+
+# ==============================================================================
+#
+#        Part 1: Annotate Peak Regions with UROPA
+#
+# ==============================================================================
+echo "Starting Part 1: Annotating peak regions with UROPA"
+
+echo "Annotating mesothelial tissue consensus peaks..."
+uropa --bed "${MESO_CONSENSUS_PEAKS}" \
+      --gtf "${ANNOTATION_GTF}" \
+      --outdir "${UROPA_DIR}/meso_tissue" \
+      --prefix meso_tissue_consensus
+
+echo "Annotating cardiac cell type consensus peaks..."
+uropa --bed "${CELLTYPE_CONSENSUS_PEAKS}" \
+      --gtf "${ANNOTATION_GTF}" \
+      --outdir "${UROPA_DIR}/cardiac_celltype" \
+      --prefix cardiac_celltype_consensus
+
+# --- Prepare Header File for BINDetect ---
+# BINDetect requires a separate header file for the annotated peaks.
+CARDIAC_ANNOTATED_HITS="${UROPA_DIR}/cardiac_celltype/cardiac_celltype_consensus_finalhits.txt"
+CARDIAC_ANNOTATED_HEADER="${UROPA_DIR}/cardiac_celltype/cardiac_celltype_consensus_header.txt"
+echo "Extracting header from UROPA output for BINDetect..."
+head -n 1 "${CARDIAC_ANNOTATED_HITS}" > "${CARDIAC_ANNOTATED_HEADER}"
+
+# The final hits from UROPA are in .txt format. For BINDetect, a .bed file is often expected.
+# We will assume the user will convert the .txt to .bed if needed, or that TOBIAS can handle the .txt.
+# For clarity, we define the path to the expected BED file.
+CARDIAC_ANNOTATED_BED="${UROPA_DIR}/cardiac_celltype/cardiac_celltype_consensus_finalhits.bed"
+# cp "${CARDIAC_ANNOTATED_HITS}" "${CARDIAC_ANNOTATED_BED}" # Example conversion if needed
+
+# ==============================================================================
+#
+#        Part 2: Bias Correction and Footprint Scoring
+#
+# ==============================================================================
+echo "Starting Part 2: Running ATACorrect and FootprintScores"
+
+# --- Process Pancreas Mesothelium ---
+echo "Processing Pancreas sample..."
+TOBIAS ATACorrect --bam "${PANCREAS_BAM}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${MESO_CONSENSUS_PEAKS}" \
+    --outdir "${ATACORRECT_DIR}/pancreas" \
+    --cores 10 --prefix pancreas
+TOBIAS FootprintScores --signal "${ATACORRECT_DIR}/pancreas/pancreas_corrected.bw" \
+    --regions "${MESO_CONSENSUS_PEAKS}" \
+    --output "${SCOREBIGWIG_DIR}/pancreas_footprints.bw" \
+    --cores 10
+
+# --- Process Lung Mesothelium ---
+echo "Processing Lung sample..."
+TOBIAS ATACorrect --bam "${LUNG_BAM}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${MESO_CONSENSUS_PEAKS}" \
+    --outdir "${ATACORRECT_DIR}/lung" \
+    --cores 20 --prefix lung
+TOBIAS FootprintScores --signal "${ATACORRECT_DIR}/lung/lung_corrected.bw" \
+    --regions "${MESO_CONSENSUS_PEAKS}" \
+    --output "${SCOREBIGWIG_DIR}/lung_footprints.bw" \
+    --cores 20
+
+# --- Process Heart Cardiomyocytes (CM) ---
+echo "Processing Heart CM sample..."
+TOBIAS ATACorrect --bam "${HEART_CM_BAM}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${CELLTYPE_CONSENSUS_PEAKS}" \
+    --outdir "${ATACORRECT_DIR}/heart_cm" \
+    --cores 28 --prefix heart_cm
+TOBIAS FootprintScores --signal "${ATACORRECT_DIR}/heart_cm/heart_cm_corrected.bw" \
+    --regions "${CELLTYPE_CONSENSUS_PEAKS}" \
+    --output "${SCOREBIGWIG_DIR}/heart_cm_footprints.bw" \
+    --cores 28
+
+# --- Process Heart Endothelial Cells (EC) ---
+echo "Processing Heart EC sample..."
+TOBIAS ATACorrect --bam "${HEART_EC_BAM}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${CELLTYPE_CONSENSUS_PEAKS}" \
+    --outdir "${ATACORRECT_DIR}/heart_ec" \
+    --cores 28 --prefix heart_ec
+TOBIAS FootprintScores --signal "${ATACORRECT_DIR}/heart_ec/heart_ec_corrected.bw" \
+    --regions "${CELLTYPE_CONSENSUS_PEAKS}" \
+    --output "${SCOREBIGWIG_DIR}/heart_ec_footprints.bw" \
+    --cores 28
+
+# --- Process E135 Epicardium ---
+# echo "Processing E135 sample..."
+# TOBIAS ATACorrect --bam "${E135_BAM}" \
+#     --genome "${GENOME_FA}" \
+#     --peaks "${E135_PEAKS}" \
+#     --outdir "${ATACORRECT_DIR}/E135" \
+#     --cores 15 --prefix E135
+# TOBIAS FootprintScores --signal "${ATACORRECT_DIR}/E135/E135_corrected.bw" \
+#     --regions "${E135_PEAKS}" \
+#     --output "${SCOREBIGWIG_DIR}/E135/E135_footprints.bw" \
+#     --cores 15
+
+# Define paths to footprinted bigWig files for convenience
+HEART_EC_FOOTPRINTS_BW="${SCOREBIGWIG_DIR}/heart_ec_footprints.bw"
+LUNG_FOOTPRINTS_BW="${SCOREBIGWIG_DIR}/lung_footprints.bw"
+E135_FOOTPRINTS_BW="${SCOREBIGWIG_DIR}/E135/E135_footprints.bw" # Assumes the E135 run was completed
+
+# ==============================================================================
+#
+#        Part 3: Differential Binding Analysis with BINDetect
+#
+# ==============================================================================
+echo "Starting Part 3: Differential binding analysis with BINDetect"
+
+# Increase the open file limit, which is often required for TOBIAS BINDetect
+# to handle many motif files simultaneously.
+echo "Increasing open file limit to 3000."
+ulimit -n 3000
+
+# --- Comparison 1: Vascular EC vs. Epicardium (E135) ---
+echo "Running BINDetect for Vascular EC vs. Epicardium..."
+TOBIAS BINDetect --motifs "${MOTIF_FILE}" \
+    --signals "${HEART_EC_FOOTPRINTS_BW}" "${E135_FOOTPRINTS_BW}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${CARDIAC_ANNOTATED_BED}" \
+    --peak_header "${CARDIAC_ANNOTATED_HEADER}" \
+    --outdir "${BINDETECT_DIR}/vascularec_vs_epi" \
+    --cond_names vascularec epi \
+    --cores 30
+
+# --- Comparison 2: Lung vs. Heart (E135) ---
+echo "Running BINDetect for Lung vs. Heart..."
+TOBIAS BINDetect --motifs "${MOTIF_FILE}" \
+    --signals "${LUNG_FOOTPRINTS_BW}" "${E135_FOOTPRINTS_BW}" \
+    --genome "${GENOME_FA}" \
+    --peaks "${CARDIAC_ANNOTATED_BED}" \
+    --peak_header "${CARDIAC_ANNOTATED_HEADER}" \
+    --outdir "${BINDETECT_DIR}/lung_vs_heart" \
+    --cond_names lung heart \
+    --cores 25
+
+# ==============================================================================
+echo "Analysis complete. Results are saved in ${TOBIAS_DIR}"
+# ==============================================================================
