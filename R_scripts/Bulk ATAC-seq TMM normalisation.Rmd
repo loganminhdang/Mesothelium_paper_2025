@@ -1,0 +1,150 @@
+---
+title: "ATAC-seq Signal Normalization using edgeR"
+author: "Quang Dang"
+date: "2025-06-20"
+output: html_document
+---
+
+This R Markdown document details the process of normalizing ATAC-seq data. The primary goal is to calculate scaling factors from raw read counts in peaks, which can then be used to generate normalized bigWig files for visualization.
+
+### Load Required Libraries
+First, we load the `purrr` library, which provides useful tools for functional programming, particularly for working with lists and functions.
+
+```{r setup}
+# purrr is used for its 'map' and 'reduce' functions, which simplify
+# the process of reading and merging multiple files.
+library(purrr)
+# The tidyverse package (commented out) is a collection of R packages
+# designed for data science, including dplyr and readr, which are used here.
+# library(tidyverse)
+```
+
+---
+
+### Part 1: Read and Merge FeatureCounts Data (Merged Replicates)
+In this section, we read the output files from `featureCounts`. These files contain the number of reads from merged-replicate BAM files that fall within a set of consensus peak regions.
+
+```{r read-merged-replicates}
+# List all files in the specified directory that match the pattern
+# "_readCountInPeaks.txt". This captures all the feature count outputs.
+f_files <- list.files("/mnt/sdb/qdang/wt1_project/epi_mes_project/featurecounts",
+                      pattern = "_readCountInPeaks.txt", full.names = TRUE)
+
+# Define a function to read and process a single featureCounts file.
+read_in_feature_counts <- function(file) {
+    # Read the tab-separated file, treating the first line as a header
+    # and ignoring any lines that start with a "#" comment character.
+    cnt <- readr::read_tsv(file, col_names = TRUE, comment = "#")
+    
+    # The initial columns (Chr, Start, End, Strand, Length) describe the
+    # peak regions. We only need the Geneid (peak ID) and the read counts,
+    # so we remove these descriptive columns.
+    cnt <- cnt %>% dplyr::select(-Chr, -Start, -End, -Strand, -Length)
+    
+    return(cnt)
+}
+    
+# Use purrr::map to apply our reading function to every file in f_files.
+# This creates a list of data frames, where each data frame contains the
+# counts for one sample.
+raw_counts <- map(f_files, read_in_feature_counts)
+
+# Use purrr::reduce to iteratively merge all data frames in the list into
+# a single data frame. The 'inner_join' function merges them based on the
+# 'Geneid' column, ensuring that only peaks present in all samples are kept.
+raw_counts_df <- purrr::reduce(raw_counts, inner_join)
+
+# Clean up the column names by removing the suffix ".mLb.clN.sorted.bam"
+# to make them shorter and more readable (e.g., "Sample1.bam" becomes "Sample1").
+colnames(raw_counts_df) <- sub(".mLb.clN.sorted.bam", "", colnames(raw_counts_df))
+
+# Save the final merged count matrix to a CSV file for future use or reference.
+write.csv(raw_counts_df, file = "/mnt/sdb/qdang/wt1_project/epi_mes_project/featurecounts/countdata.csv")
+```
+
+---
+
+### Part 2: Read and Merge FeatureCounts Data (Individual Replicates)
+This chunk is similar to the first but processes count files from individual, non-merged replicates. This is often done to assess variability between replicates before merging.
+
+```{r read-individual-replicates}
+# List all featureCounts files for individual replicates.
+f_files_indiv <- list.files("/mnt/sdb/qdang/wt1_project/epi_mes_project/featurecounts/individual_replicate",
+                            pattern = "_readCountInPeaks.txt", full.names = TRUE)
+
+# The same reading function from Part 1 is used here.
+raw_counts_indiv <- map(f_files_indiv, read_in_feature_counts)
+raw_counts_df_indiv <- purrr::reduce(raw_counts_indiv, inner_join)
+
+# Clean up column names by removing the long path prefix.
+colnames(raw_counts_df_indiv) <- sub("/mnt/sdb/qdang/wt1_project/epi_mes_project/", "", colnames(raw_counts_df_indiv))
+# Further clean up by removing the BAM file suffix.
+colnames(raw_counts_df_indiv) <- sub(".mRp.clN.sorted.bam", "", colnames(raw_counts_df_indiv))
+```
+
+---
+
+### Part 3: Calculate Normalization Factors with edgeR
+This is the core normalization step. We use the TMM (Trimmed Mean of M-values) method from the `edgeR` package to calculate normalization factors. TMM is robust against compositional bias, which can occur when a few genomic regions have extremely high signal in one sample compared to others.
+
+```{r calculate-normalization-factors}
+# Load the edgeR library, which is a standard tool for differential expression
+# and normalization of count-based sequencing data.
+library(edgeR)
+
+# The edgeR functions require a numeric matrix with gene/peak IDs as row names.
+# First, we set the 'Geneid' column as the row names of our data frame.
+row.names(raw_counts_df) <- raw_counts_df$Geneid
+
+# Convert all columns to numeric format. This is a crucial step because
+# data read from files can sometimes be interpreted as characters or factors.
+raw_counts_df2 <- data.frame(lapply(raw_counts_df, function(x) as.numeric(as.character(x))),
+                           check.names = FALSE, row.names = rownames(raw_counts_df))
+
+# Remove the original 'Geneid' column, which is now redundant because the
+# peak IDs are stored as row names.
+raw_counts_df2 <- subset(raw_counts_df2, select = -Geneid)
+
+# Calculate TMM normalization factors. This function estimates the relative
+# library sizes while accounting for compositional differences between samples.
+NormFactor <- calcNormFactors(object = raw_counts_df2, method = "TMM")
+
+# Get the total number of reads (library size) for each sample.
+LibSize <- colSums(raw_counts_df2)
+
+# Calculate the final size factors. These are what deepTools will use.
+# The formula is (TMM Normalization Factor * Library Size) / 1,000,000.
+# This produces a size factor relative to a library of one million reads (CPM scaling).
+SizeFactors <- NormFactor * LibSize / 1000000
+
+# For use with deepTools' bamCoverage, we need the reciprocal of the size factor.
+# deepTools applies the scale factor by multiplication (Coverage = Reads * ScaleFactor),
+# so we provide 1/SizeFactor to achieve normalization by division.
+SizeFactors.Reciprocal <- 1 / SizeFactors
+
+# Print the reciprocal factors. These are the values you will use with the
+# --scaleFactor parameter in bamCoverage.
+print(SizeFactors.Reciprocal)
+```
+
+---
+
+### Part 4: Generate Normalized bigWig File
+The final step is to use the calculated scale factor to generate a normalized coverage file in bigWig format. This is done outside of R using the `bamCoverage` tool from the deepTools suite.
+
+```bash
+# This command takes a BAM file and generates a bigWig file.
+# --bam: The input alignment file.
+# -o: The output normalized bigWig file.
+# --binSize: The size of the genomic windows (bins) to calculate coverage over.
+# --scaleFactor: The normalization factor. We use the reciprocal value calculated
+#                in the R script above (e.g., 0.04026939 for this specific sample).
+#                This effectively divides the coverage in each bin by the TMM-adjusted
+#                library size, making it comparable to other samples.
+# --numberOfProcessors: The number of CPU cores to use for faster processing.
+
+bamCoverage --bam /mnt/sdb/qnap/qdang/andia_data/data_output_EPI_ATAC_E115E135E175/bowtie2/merged_library/E115_REP1.mLb.clN.sorted.bam \
+ -o /mnt/sdb/qdang/atac/bigwig/E115_REP1.TMM.bw \
+ --binSize 10 \
+ --scaleFactor 0.04026939 \
+ --numberOfProcessors 30
