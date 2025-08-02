@@ -1,0 +1,171 @@
+#!/bin/bash
+#
+# ==============================================================================
+#
+#                    ABC Model for Enhancer-Gene Prediction
+#
+# ==============================================================================
+#
+# Author: Quang Dang
+# Date: 2025-08-02
+# Description: This script runs the Activity-by-Contact (ABC) model to predict
+#              enhancer-gene links from ATAC-seq and H3K27ac CUT&RUN-seq data.
+#              The pipeline consists of three main parts:
+#              1. Generation of candidate enhancer regions from ATAC-seq peaks.
+#              2. Quantification of signals in enhancer neighborhoods.
+#              3. Prediction of enhancer-gene interactions.
+#
+# Requirements:
+#   - micromamba
+#   - ABC-Enhancer-Gene-Prediction (https://github.com/broadinstitute/ABC-Enhancer-Gene-Prediction)
+#   - bedtools
+#   - GNU Parallel
+#
+# Usage:
+#   - Ensure the 'abc' micromamba environment is set up with all dependencies.
+#   - Update the file paths and sample IDs in the "Configuration" section.
+#   - Execute the script from your terminal: ./run_abc_analysis.sh
+#
+# ==============================================================================
+
+# --- Configuration ---
+
+# Activate the required micromamba environment
+echo "Activating 'abc' environment..."
+eval "$(micromamba shell hook --shell bash)"
+micromamba activate abc
+
+# Set a temporary directory for GNU parallel to use
+export TMPDIR="/mnt/sdb/qdang/tmp"
+mkdir -p "${TMPDIR}"
+
+# --- Set Base Directories ---
+ABC_MODEL_DIR="/mnt/sdb/qdang/ABC-Enhancer-Gene-Prediction"
+PROJECT_DIR="/mnt/sdb/qdang/atac/abc_enhancer/562024_revisedrun"
+REFERENCE_DIR="/mnt/sdb/qdang/reference/mouse"
+ATAC_PEAK_DIR="/mnt/sdb/qdang/atac/macs2_peakcalling/run2_652024/q_001"
+ATAC_BAM_DIR="/mnt/sdb/andiar/data_output_EPI_ATAC_E115E135E175/bowtie2/merged_replicate"
+H3K27AC_BAM_DIR="/mnt/sdb/andiar/Result_browse/v3_run_CPM/HISonly_SF08_q10/data_output_Hisonly/02_alignment/bowtie2/target"
+EXPRESSION_DIR="/mnt/sdb/qdang/singlecell/epi"
+
+# --- Set Core File Paths ---
+CHROM_SIZES="/home/qdang/atac/iterative_peak_filtering/mm10chromsizes"
+BLACKLIST_REGIONS="${REFERENCE_DIR}/mm10-blacklist.v2.bed"
+GENE_LIST_BED="${REFERENCE_DIR}/RefSeqCurated.060524.CollapsedGeneBounds.mm10.bed"
+UBIQUITOUS_GENES="${REFERENCE_DIR}/UbiquitouslyExpressedGenesmm10.txt"
+
+# --- Define Samples and Time Points ---
+SAMPLES=("E115" "E135" "E175")
+
+# ==============================================================================
+#
+#        Part 1: Generate Candidate Enhancer Regions
+#
+# ==============================================================================
+echo "Starting Part 1: Generating Candidate Enhancer Regions"
+
+# This part generates candidate enhancer regions from ATAC-seq peaks.
+# The original script had a complex, single-line bedtools pipe. It is broken
+# down here for clarity and maintainability.
+
+for SAMPLE in "${SAMPLES[@]}"; do
+    echo "Processing sample: ${SAMPLE}"
+
+    # Define input and output files for the current sample
+    PEAK_FILE="${ATAC_PEAK_DIR}/${SAMPLE}.mRp.clN_peaks.narrowPeak"
+    COUNTS_FILE="${PROJECT_DIR}/${SAMPLE}.mRp.clN_peaks.narrowPeak.${SAMPLE}.mRp.clN.sorted.bam.Counts.bed" # Assumes this file is pre-generated
+    CANDIDATE_REGIONS_BED="${PROJECT_DIR}/${SAMPLE}.candidateRegions.bed"
+
+    # Check if the required counts file exists
+    if [ ! -f "${COUNTS_FILE}" ]; then
+        echo "ERROR: Counts file not found for ${SAMPLE}: ${COUNTS_FILE}"
+        echo "Please run 'makeCandidateRegions.py' first to generate it."
+        continue
+    fi
+
+    echo "Generating candidate regions for ${SAMPLE}..."
+    # 1. Sort the counts file by coordinates.
+    # 2. Merge overlapping regions, keeping the max score (column 4).
+    # 3. Sort by score in descending order and take the top 150,000 peaks.
+    # 4. Intersect with the original narrowPeak file to retrieve full peak info.
+    # 5. Define the new summit and create a 500bp region around it (250bp each side).
+    # 6. Sort and merge the resulting regions.
+    # 7. Remove any regions that overlap with the blacklist.
+    # 8. Final merge and save to the candidate regions file.
+    bedtools sort -i "${COUNTS_FILE}" -faidx "${CHROM_SIZES}" | \
+    bedtools merge -i stdin -c 4 -o max | \
+    sort -k4,4nr | \
+    head -n 150000 | \
+    bedtools intersect -b stdin -a "${PEAK_FILE}" -wa | \
+    awk 'BEGIN{OFS="\t"} {print $1, $2 + $10, $2 + $10}' | \
+    bedtools slop -i stdin -b 250 -g "${CHROM_SIZES}" | \
+    bedtools sort -i stdin -faidx "${CHROM_SIZES}" | \
+    bedtools merge -i stdin | \
+    bedtools intersect -v -wa -a stdin -b "${BLACKLIST_REGIONS}" | \
+    bedtools merge -i stdin > "${CANDIDATE_REGIONS_BED}"
+
+    echo "Candidate regions for ${SAMPLE} saved to ${CANDIDATE_REGIONS_BED}"
+done
+
+
+# ==============================================================================
+#
+#        Part 2: Quantify Signals and Define Neighborhoods
+#
+# ==============================================================================
+echo "Starting Part 2: Defining Enhancer Neighborhoods"
+
+cd "${ABC_MODEL_DIR}" || { echo "ERROR: Could not change to ABC model directory"; exit 1; }
+
+for SAMPLE in "${SAMPLES[@]}"; do
+    echo "Running neighborhood analysis for ${SAMPLE}..."
+
+    # Define sample-specific paths
+    CANDIDATE_REGIONS_BED="${PROJECT_DIR}/${SAMPLE}.candidateRegions.bed"
+    ATAC_BAM_REPS="${ATAC_BAM_DIR}/../merged_library/${SAMPLE}_REP1.mLb.clN.sorted.bam,${ATAC_BAM_DIR}/../merged_library/${SAMPLE}_REP2.mLb.clN.sorted.bam,${ATAC_BAM_DIR}/../merged_library/${SAMPLE}_REP3.mLb.clN.sorted.bam"
+    EXPRESSION_TABLE="${EXPRESSION_DIR}/${SAMPLE}_analysis/${SAMPLE,,}_TPM.txt" # e.g., e115_TPM.txt
+    NEIGHBORHOOD_OUTDIR="${PROJECT_DIR}/neighborhoods/${SAMPLE}"
+    
+    # H3K27ac BAMs are the same for all samples in the original script
+    H3K27AC_BAM_REPS="${H3K27AC_BAM_DIR}/H3K27ac_EPI_R1.target.markdup.bam,${H3K27AC_BAM_DIR}/H3K27ac_EPI_R2.target.markdup.bam,${H3K27AC_BAM_DIR}/H3K27ac_EPI_R3.target.markdup.bam"
+
+    python src/run.neighborhoods.py \
+        --candidate_enhancer_regions "${CANDIDATE_REGIONS_BED}" \
+        --genes "${GENE_LIST_BED}" \
+        --H3K27ac "${H3K27AC_BAM_REPS}" \
+        --ATAC "${ATAC_BAM_REPS}" \
+        --expression_table "${EXPRESSION_TABLE}" \
+        --chrom_sizes "${CHROM_SIZES}" \
+        --ubiquitously_expressed_genes "${UBIQUITOUS_GENES}" \
+        --outdir "${NEIGHBORHOOD_OUTDIR}"
+done
+
+# ==============================================================================
+#
+#        Part 3: Predict Enhancer-Gene Links
+#
+# ==============================================================================
+echo "Starting Part 3: Predicting Enhancer-Gene Links"
+
+# This example runs prediction only on the E17.5 sample, as in the original script.
+# This can be easily looped for all samples if needed.
+SAMPLE_TO_PREDICT="E175"
+echo "Running prediction for sample: ${SAMPLE_TO_PREDICT}"
+
+NEIGHBORHOOD_DIR="${PROJECT_DIR}/neighborhoods/${SAMPLE_TO_PREDICT}"
+PREDICT_OUTDIR="${PROJECT_DIR}/predict/${SAMPLE_TO_PREDICT}"
+mkdir -p "${PREDICT_OUTDIR}"
+
+python src/predict.py \
+    --enhancers "${NEIGHBORHOOD_DIR}/EnhancerList.txt" \
+    --genes "${NEIGHBORHOOD_DIR}/GeneList.txt" \
+    --chrom_sizes "${CHROM_SIZES}" \
+    --threshold .02 \
+    --outdir "${PREDICT_OUTDIR}" \
+    --make_all_putative \
+    --score_column powerlaw.Score \
+    --hic_gamma_reference .87
+
+# ==============================================================================
+echo "ABC analysis complete. Results are in ${PROJECT_DIR}"
+# ==============================================================================
