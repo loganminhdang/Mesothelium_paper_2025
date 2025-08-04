@@ -1,8 +1,6 @@
 # Organ-specific and conserved regulatory logic orchestrates gene expression in the embryonic mesothelium
 
-[![GitHub release](https://img.shields.io/github/v/release//loganminhdang/Mesothelium_paper_2025)](https://github.com//loganminhdang/Mesothelium_paper_2025/releases)
-
-> One-sentence description of what this repository does.
+> Repository description
 
 This repository contains the analysis script for the manuscript  
 "Organ-specific and conserved regulatory logic orchestrates gene expression in the embryonic mesothelium" (Dang et al, 2025)
@@ -20,33 +18,26 @@ PROJECT-NAME/
 |   └── Differential chromatin accessibility analysis.Rmd           # Differential chromatin accessibility analysis of epicardium and epicardium-derived cell ATAC-seq data
 |   └── hdWGCNA analysis of mesothelia.Rmd           # Detection of organ mesothelial gene co-expression modules
 ├── notebooks/
-│   ├── 01-exploratory.ipynb
-│   └── 02-model-validation.ipynb
-├── scripts/
-│   ├── 00-setup.sh        # One-command install (macOS + Linux).
-│   ├── 01-preprocess.sh
-│   └── 02-run_models.R
-├── Rmd/
-│   ├── paper-figures.Rmd
-│   └── supplementary.Rmd
-├── renv.lock              # R package snapshot (use with renv::restore()).
-├── requirements.txt       # Python packages for the notebooks.
-├── Makefile               # Optional: make all reproduces the whole study.
+│   ├── Analysis of E13.5 heart scRNA-seq.ipynb           # E13.5 heart scRNA-seq analysis
+│   └── Analysis of lung and pancreas scRNA-seq datasets in early development.ipynb # Lung and pancreas scRNA-seq analysis
+│   └── scRNA-seq pathway enrichment.ipynb             # scRNA-seq pathway enrichment analysis
+│   └── Metacell differential expression analysis.ipynb             # scRNA-seq differential analysis
+│   └── Epicardium EMT reconstruction via scRNA-seq.ipynb             # Single-cell reconstruction of epicardial EMT
+│   └── Benchmarking of human fetal heart scRNA-seq integration.ipynb             # Single-cell integration of the developing human heart
+│   └── Integration and benchmarking - mouse embryonic heart scRNA-seq             # Single-cell integration of the developing mouse heart
+│   └── Integration of mouse and human epicardium.ipynb             # Single-cell integration of the epicardium across species
+│   └── scATACseq analysis of embryonic mesothelia.ipynb           # Embryonic mesothelial scATAC-seq analysis
+│   └── scATAC-seq peak calling and topic modelling.ipynb           # Embryonic mesothelial scATAC-seq peak-calling and topic modelling (for GRN inference)
+├── unix_scripts/
+│   ├── Code for ATAC-seq and Cut&Run-seq signal visualisation.txt       
+│   ├── Code for MACS2 peak filtering.txt             # ATAC-seq peak processing
+│   └── Code for digital footprinting.txt             # ATAC-seq footprinting
+│   └── Code for E-P prediction.txt                   # Prediction of Enhancer-promote connections
 └── README.md              # You are here.
 
 ```
 ---
-
-## 📓 Interactive Notebooks
-| Notebook                              | Purpose                  | Run in Browser                                                                                                                                         |
-| ------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `notebooks/01-exploratory.ipynb`      | EDA & sanity checks      | [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/YOUR-USERNAME/PROJECT-NAME/HEAD?filepath=notebooks%2F01-exploratory.ipynb) |
-| `notebooks/02-model-validation.ipynb` | Cross-validation metrics | same link as above                                                                                                                                     |
-
 ## 📊 Outputs
 
-- **Figures**: saved to `outputs/figures/` (vector PDF + 300 dpi PNG).  
-- **Supplementary Tables**: auto-written to `outputs/tables/` as both `.csv` and LaTeX `.tex`.  
-- **Rendered R Markdown**:  
-  - `Rmd/paper-figures.Rmd` → `docs/paper-figures.html` (manuscript plots).  
-  - `Rmd/supplementary.Rmd` → `docs/supplementary.html`.
+- **Figures**: `figures/` (700 dpi PNG).  
+- **Supplementary Tables**: `tables/` as `.csv`.  
