@@ -7,7 +7,7 @@ This repository contains the analysis script for the manuscript
 
 ---
 
-## 📂 Repository Map
+## Repository Map
 ```text
 PROJECT-NAME/
 
@@ -38,7 +38,7 @@ PROJECT-NAME/
 
 ```
 ---
-## 📊 Outputs
+## Outputs
 
 - **Figures**: `figures/` (700 dpi PNG).  
 - **Single-cell integration benchmarking results**: `integrations/` (PNG).  
