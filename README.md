@@ -29,11 +29,15 @@ PROJECT-NAME/
 │   └── Integration of mouse and human epicardium.ipynb                    # Single-cell integration of the epicardium across species
 │   └── scATACseq analysis of embryonic mesothelia.ipynb                   # Embryonic mesothelial scATAC-seq analysis
 │   └── scATAC-seq peak calling and topic modelling.ipynb                  # Embryonic mesothelial scATAC-seq peak-calling and topic modelling (for GRN inference)
+│   └── notebook1_merfish_human_epicardial.ipynb                           # Human fetal heart MERFISH+ spatial data analysis
+│   └── notebook2_mosta_mouse_epicardial.ipynb                             # Mouse embryonic heart stereo-seq data analysis
 ├── unix_scripts/
 │   ├── Code for ATAC-seq and Cut&Run-seq signal visualisation.txt       
 │   ├── Code for MACS2 peak filtering.txt             # ATAC-seq peak processing
 │   └── Code for digital footprinting.txt             # ATAC-seq footprinting
 │   └── Code for E-P prediction.txt                   # Prediction of Enhancer-promote connections
+│   └── cre_matcher_paper.py                          # Matching enhancers against compatible ATAC-seq background - for conservation analysis
+│   └── conservation_metrics_paper.py                 # Quantifies evolutionary conservation for each interval in both the enhancer and its matched background set - for conservation analysis
 └── README.md              # You are here.
 
 ```
