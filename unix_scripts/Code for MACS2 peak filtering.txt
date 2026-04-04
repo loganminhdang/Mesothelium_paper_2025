@@ -11,7 +11,7 @@
 # Description: This script processes ATAC-seq peak files from MACS2. It performs
 #              summit extension, iterative filtering to remove weak peaks, score
 #              normalization, and finally merges peaks from multiple samples into
-#              a consensus peak set. Heavily inspired by Corces et al. (2018). 
+#              a consensus peak set. Heavily inspired by Corces et al. (2018) and Aerts Lab: https://github.com/aertslab/iterative_peak_filtering. 
 #
 # Requirements:
 #   - micromamba
@@ -24,7 +24,7 @@
 #     - normalize_macs2_peak_scores.sh
 #
 # Usage:
-#   - Ensure the 'bioinfo' micromamba environment is set up with all dependencies.
+#   - Ensure the micromamba environment is set up with all dependencies.
 #   - Place this script in the same directory as the custom helper scripts.
 #   - Update the file paths and sample IDs in the "Configuration" section.
 #   - Execute the script from your terminal: ./run_peak_filtering.sh
